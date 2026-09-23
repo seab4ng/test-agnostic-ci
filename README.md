@@ -5,11 +5,19 @@
 | Platform | Wrapper file | Pushes image to |
 |---|---|---|
 | GitHub Actions | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | `ghcr.io/seab4ng/test-agnostic-ci` |
-| GitLab CI | [`.gitlab-ci.yml`](.gitlab-ci.yml) | `registry.gitlab.com/_alucard/test-agnostic-ci` |
+| GitLab CI | [`.gitlab-ci.yml`](.gitlab-ci.yml) | in-pipeline `registry:2` service (see quirk note below) |
 
-Both pipelines run the **byte-identical** scripts in [`ci/`](ci/) and produce the **same image tag**
-(the 8-char commit sha) — each into its own platform-native registry, using each platform's
-native automatic credentials. No secrets were configured anywhere.
+Both pipelines run the **byte-identical** Taskfile + scripts in [`ci/`](ci/) and produce the
+**same image tag** (the 8-char commit sha), using each platform's natively injected
+credentials. No secrets were configured anywhere.
+
+> **Real-world quirk, absorbed by the wrapper:** this GitLab account's namespace is
+> `_alucard` — a leading underscore is an invalid path component under the Docker/OCI
+> reference spec, so `registry.gitlab.com/_alucard/*` is rejected by every Docker client.
+> The GitLab wrapper therefore points the same scripts at a registry running as a CI
+> service; the production mapping (`$CI_REGISTRY` + `$CI_REGISTRY_PASSWORD`) is included
+> as comments. Note what did NOT change to handle this: the Taskfile, the scripts, the
+> Dockerfile — this is the layering doing its job.
 
 ## The architecture: two layers
 
@@ -63,14 +71,14 @@ which each wrapper maps from its platform's native values:
 ## Prove it to yourself
 
 ```sh
-# Pull the SAME commit's image from both registries and ask each who built it
-docker run --rm -p 8080:8080 ghcr.io/seab4ng/test-agnostic-ci:<sha>          # login first if private
+# The GitHub-built image, pulled from ghcr.io (login first — the package is private):
+docker run --rm -p 8080:8080 ghcr.io/seab4ng/test-agnostic-ci:<sha>
 curl -s localhost:8080 | jq          # -> "builtBy": "github-actions"
-
-docker run --rm -p 8080:8080 registry.gitlab.com/_alucard/test-agnostic-ci:<sha>
-curl -s localhost:8080 | jq          # -> "builtBy": "gitlab-ci"
 ```
 
+For the GitLab side, open the `docker-image` job log: the same `task image:build` /
+`task image:push` output appears, ending with pushed digests — and a local build shows
+`"builtBy": "gitlab-ci"` wiring via `BUILD_ORIGIN=gitlab-ci task run:local`.
 Same `version`, same `commit`, same binary logic — only `builtBy` differs.
 
 ## Run the whole pipeline on your laptop (no CI at all)

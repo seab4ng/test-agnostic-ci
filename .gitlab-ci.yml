@@ -30,20 +30,35 @@ docker-image:
   stage: image
   image: docker:27
   services:
-    - docker:27-dind                     # platform-specific docker-daemon plumbing
+    - name: docker:27-dind               # platform-specific docker-daemon plumbing
+      command: ["--insecure-registry=registry:5000"]
+    - name: registry:2                   # in-pipeline registry (see QUIRK below)
+      alias: registry
   variables:
+    FF_NETWORK_PER_BUILD: "true"         # lets dind reach the registry service
     DOCKER_HOST: tcp://docker:2376
     DOCKER_TLS_CERTDIR: "/certs"
     DOCKER_TLS_VERIFY: "1"
     DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
     # ------- map GitLab-provided values onto the generic contract -------
-    REGISTRY: $CI_REGISTRY               # registry.gitlab.com
-    IMAGE: $CI_PROJECT_PATH              # _alucard/test-agnostic-ci
+    # QUIRK: this account's namespace is "_alucard"; a leading underscore is an
+    # invalid path component per the Docker/OCI reference spec, so
+    # registry.gitlab.com/_alucard/* is rejected by every Docker client and
+    # registry. The POC therefore pushes to a registry running as a pipeline
+    # service. The portable scripts don't change — the quirk is absorbed HERE,
+    # in the thin wrapper, which is exactly the point of the architecture.
+    REGISTRY: registry:5000
+    IMAGE: poc/test-agnostic-ci
     TAG: $CI_COMMIT_SHORT_SHA
     COMMIT: $CI_COMMIT_SHORT_SHA
-    REGISTRY_USER: $CI_REGISTRY_USER     # injected natively by GitLab
-    REGISTRY_PASS: $CI_REGISTRY_PASSWORD # short-lived, scoped job token
+    REGISTRY_USER: poc                   # registry:2 here is anonymous;
+    REGISTRY_PASS: poc                   # the contract is still exercised
     BUILD_ORIGIN: gitlab-ci
+    # ------- production mapping (any normally-named namespace) -------
+    # REGISTRY: $CI_REGISTRY               # registry.gitlab.com
+    # IMAGE: $CI_PROJECT_PATH
+    # REGISTRY_USER: $CI_REGISTRY_USER     # injected natively by GitLab
+    # REGISTRY_PASS: $CI_REGISTRY_PASSWORD # short-lived, scoped job token
   before_script:
     - sh -c "$(wget -qO- https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.53.1
   script:
