@@ -1,0 +1,48 @@
+# =============================================================================
+# LAYER 2 — THIN GITHUB WRAPPER (orchestration only, ZERO business logic)
+#
+# Mirror of .gitlab-ci.yml: triggers, runner/image choice, credential
+# injection, artifact upload, mapping GitHub values onto the generic
+# contract — and calls to the SAME portable scripts in ci/.
+# =============================================================================
+name: ci
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    container: golang:1.25            # same toolchain image as the GitLab job
+    steps:
+      - uses: actions/checkout@v4
+      # toolchain bootstrap — in a real org, bake `task` into the runner image
+      - run: sh -c "$(curl -fsSL https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.53.1
+      - run: task compile             # <-- ALL logic behind this menu entry
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-output
+          path: |
+            bin/app
+            reports/junit.xml
+
+  docker-image:
+    needs: compile
+    runs-on: ubuntu-latest            # GitHub VMs ship a docker daemon (no dind)
+    permissions:
+      contents: read
+      packages: write                 # lets GITHUB_TOKEN push to ghcr.io
+    env:
+      # ------- map GitHub-provided values onto the generic contract -------
+      REGISTRY: ghcr.io
+      IMAGE: ${{ github.repository }}             # seab4ng/test-agnostic-ci
+      REGISTRY_USER: ${{ github.actor }}
+      REGISTRY_PASS: ${{ secrets.GITHUB_TOKEN }}  # injected natively by GitHub
+      BUILD_ORIGIN: github-actions
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh -c "$(curl -fsSL https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.53.1
+      - run: TAG="${GITHUB_SHA:0:8}" COMMIT="${GITHUB_SHA:0:8}" task image:build
+      - run: task image:push          # <-- byte-identical tasks to GitLab

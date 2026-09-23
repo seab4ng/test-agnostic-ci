@@ -1,93 +1,117 @@
-# test-agnostic-ci
+# test-agnostic-ci — CI-Agnostic Pipeline POC
 
+**One codebase. One set of pipeline scripts. Two CI platforms — with zero shared code changed.**
 
+| Platform | Wrapper file | Pushes image to |
+|---|---|---|
+| GitHub Actions | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | `ghcr.io/seab4ng/test-agnostic-ci` |
+| GitLab CI | [`.gitlab-ci.yml`](.gitlab-ci.yml) | `registry.gitlab.com/_alucard/test-agnostic-ci` |
 
-## Getting started
+Both pipelines run the **byte-identical** scripts in [`ci/`](ci/) and produce the **same image tag**
+(the 8-char commit sha) — each into its own platform-native registry, using each platform's
+native automatic credentials. No secrets were configured anywhere.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
-
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+## The architecture: two layers
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/_alucard/test-agnostic-ci.git
-git branch -M main
-git push -uf origin main
+                 ┌───────────────────────────────────────────────────┐
+                 │  LAYER 2 — thin native wrappers (~40 lines each)  │
+                 │  orchestration ONLY: triggers, job images,        │
+                 │  credentials, artifacts, env mapping              │
+                 │                                                   │
+ GitHub Actions ─►  .github/workflows/ci.yml                         │
+ GitLab CI      ─►  .gitlab-ci.yml                                   │
+ Jenkins (next) ─►  Jenkinsfile            (see "Adding Jenkins")    │
+                 └──────────────────────┬────────────────────────────┘
+                                        │ generic env-var contract
+                                        ▼
+                 ┌───────────────────────────────────────────────────┐
+                 │  LAYER 1 — portable logic (platform-blind)        │
+                 │  Taskfile.yml        the MENU: task compile, ...  │
+                 │  ci/compile.sh       vet + unit tests + build     │
+                 │  ci/image-build.sh   docker build (+ metadata)    │
+                 │  ci/image-push.sh    docker login + push          │
+                 │  Dockerfile          multi-stage, scratch runtime │
+                 └───────────────────────────────────────────────────┘
 ```
 
-## Integrate with your tools
+**The rule that makes it work: no business logic in platform YAML — ever.**
+The wrapper may only trigger, order jobs, inject credentials, declare artifacts,
+and call `task <name>`. The Taskfile is the menu (`task --list`); the recipes are
+the `ci/*.sh` scripts — so the whole pipeline also runs on your laptop.
 
-* [Set up project integrations](https://gitlab.com/_alucard/test-agnostic-ci/-/settings/integrations)
+## The generic contract
 
-## Collaborate with your team
+The scripts know nothing about any CI. They read only these env vars,
+which each wrapper maps from its platform's native values:
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+| Contract var | GitHub Actions maps from | GitLab CI maps from | Jenkins would map from |
+|---|---|---|---|
+| `REGISTRY` | `ghcr.io` (literal) | `$CI_REGISTRY` | your Artifactory host |
+| `IMAGE` | `${{ github.repository }}` | `$CI_PROJECT_PATH` | literal |
+| `TAG` / `COMMIT` | `${GITHUB_SHA:0:8}` | `$CI_COMMIT_SHORT_SHA` | `GIT_COMMIT` |
+| `REGISTRY_USER` / `REGISTRY_PASS` | `github.actor` / `secrets.GITHUB_TOKEN` | `$CI_REGISTRY_USER` / `$CI_REGISTRY_PASSWORD` | `withCredentials(...)` |
+| `BUILD_ORIGIN` | `github-actions` | `gitlab-ci` | `jenkins` |
 
-## Test and Deploy
+## What we did NOT lose (the whole point)
 
-Use the built-in continuous integration in GitLab.
+- **Per-job logs & retries** — `compile` and `docker-image` are separate platform jobs on both sides; each has its own log, timing, and retry button in the native UI.
+- **Native test reporting** — `ci/compile.sh` emits `reports/junit.xml`; GitLab ingests it via `artifacts:reports:junit` (test widget in MRs), GitHub stores it as a build artifact. Same file, one line of declaration each.
+- **Native credentials** — no tokens in scripts or repo; GitHub injects `GITHUB_TOKEN`, GitLab injects the job-scoped `CI_REGISTRY_PASSWORD`, Jenkins would use `withCredentials`.
+- **Native platform plumbing** — GitLab needs docker-in-docker services, GitHub's VM has a daemon built in. That difference lives in the wrappers, where it belongs.
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+## Prove it to yourself
 
-***
+```sh
+# Pull the SAME commit's image from both registries and ask each who built it
+docker run --rm -p 8080:8080 ghcr.io/seab4ng/test-agnostic-ci:<sha>          # login first if private
+curl -s localhost:8080 | jq          # -> "builtBy": "github-actions"
 
-# Editing this README
+docker run --rm -p 8080:8080 registry.gitlab.com/_alucard/test-agnostic-ci:<sha>
+curl -s localhost:8080 | jq          # -> "builtBy": "gitlab-ci"
+```
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+Same `version`, same `commit`, same binary logic — only `builtBy` differs.
 
-## Suggestions for a good README
+## Run the whole pipeline on your laptop (no CI at all)
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+```sh
+task compile                                   # vet + test + build -> bin/app
+REGISTRY=local.dev IMAGE=poc task run:local    # build image + run it on :8080
+curl -s localhost:8080 | jq                    # -> "builtBy": "local"
+```
 
-## Name
-Choose a self-explaining name for your project.
+This is the bonus you don't get with logic buried in Jenkinsfiles/YAML:
+debugging CI without a commit-push-wait loop.
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+## Adding Jenkins (or any other CI) = one thin file
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+```groovy
+pipeline {
+  agent { label 'linux-docker' }
+  stages {
+    stage('compile') {
+      agent { docker { image 'golang:1.25' } }        // bake `task` into this image
+      steps { sh 'task compile' }
+      post { always { junit 'reports/junit.xml' } }   // same file feeds Jenkins UI
+    }
+    stage('image') {
+      environment { REGISTRY = 'artifactory.internal'; IMAGE = 'poc/test-agnostic-ci'; BUILD_ORIGIN = 'jenkins' }
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'registry',
+            usernameVariable: 'REGISTRY_USER', passwordVariable: 'REGISTRY_PASS')]) {
+          sh 'task image:build image:push'
+        }
+      }
+    }
+  }
+}
+```
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+No script changes. That is the migration cost of switching CI platforms with this pattern.
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+## Notes / deliberate POC simplifications
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+- The wrappers install the `task` binary (pinned v3.53.1) and `gotestsum` at run time; in a real org — especially air-gapped — you bake both into your internal toolchain images and delete those bootstrap lines.
+- The two CI jobs each build independently (the docker stage recompiles inside the multi-stage Dockerfile). Good enough here; a real setup would pass `bin/app` as an artifact or use registry layer caching.
+- `image-push.sh` assumes the registry host has no `:port` when deriving the `:latest` tag.

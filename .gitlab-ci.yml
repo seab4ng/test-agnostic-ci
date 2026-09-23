@@ -1,0 +1,51 @@
+# =============================================================================
+# LAYER 2 — THIN GITLAB WRAPPER (orchestration only, ZERO business logic)
+#
+# This file may only: define stages/triggers, pick job images, inject
+# credentials, declare artifacts/reports, map GitLab variables onto the
+# generic contract, and call the portable scripts in ci/.
+# The equivalent GitHub wrapper is .github/workflows/ci.yml — compare them.
+# =============================================================================
+stages:
+  - compile
+  - image
+
+compile:
+  stage: compile
+  image: golang:1.25
+  before_script:
+    # toolchain bootstrap — in a real org, bake `task` into the runner image
+    - sh -c "$(wget -qO- https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.53.1
+  script:
+    - task compile                       # <-- ALL logic behind this menu entry
+  artifacts:
+    when: always
+    reports:
+      junit: reports/junit.xml           # feeds GitLab's native test widget
+    paths:
+      - bin/app
+    expire_in: 1 week
+
+docker-image:
+  stage: image
+  image: docker:27
+  services:
+    - docker:27-dind                     # platform-specific docker-daemon plumbing
+  variables:
+    DOCKER_HOST: tcp://docker:2376
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: "$DOCKER_TLS_CERTDIR/client"
+    # ------- map GitLab-provided values onto the generic contract -------
+    REGISTRY: $CI_REGISTRY               # registry.gitlab.com
+    IMAGE: $CI_PROJECT_PATH              # _alucard/test-agnostic-ci
+    TAG: $CI_COMMIT_SHORT_SHA
+    COMMIT: $CI_COMMIT_SHORT_SHA
+    REGISTRY_USER: $CI_REGISTRY_USER     # injected natively by GitLab
+    REGISTRY_PASS: $CI_REGISTRY_PASSWORD # short-lived, scoped job token
+    BUILD_ORIGIN: gitlab-ci
+  before_script:
+    - sh -c "$(wget -qO- https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin v3.53.1
+  script:
+    - task image:build                   # <-- byte-identical tasks to GitHub
+    - task image:push

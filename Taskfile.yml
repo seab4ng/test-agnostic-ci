@@ -1,0 +1,42 @@
+# =============================================================================
+# LAYER 1 — PORTABLE ENTRYPOINT (platform-blind)
+#
+# The single command surface for humans AND every CI platform:
+#   task --list        show the menu
+#   task compile       vet + unit tests + build
+#   task image:build   build the docker image
+#   task image:push    push it to $REGISTRY
+#
+# Tasks are the MENU; the recipes live in ci/*.sh. No CI platform is
+# mentioned anywhere in this file or in the scripts.
+# =============================================================================
+version: "3"
+
+tasks:
+  compile:
+    desc: Vet, unit-test (JUnit XML) and build the static binary
+    cmds:
+      - ./ci/compile.sh
+
+  image:build:
+    desc: Build the docker image (requires REGISTRY, IMAGE; optional TAG)
+    cmds:
+      - ./ci/image-build.sh
+
+  image:push:
+    desc: Push the image built by image:build (requires REGISTRY_USER/PASS)
+    cmds:
+      - ./ci/image-push.sh
+
+  run:local:
+    desc: Run the freshly built image locally on :8080
+    deps: [image:build]
+    cmds:
+      - docker run --rm -p 8080:8080 "$(cat .image-ref)"
+
+  ci:
+    desc: The full pipeline, exactly as CI runs it
+    cmds:
+      - task: compile
+      - task: image:build
+      - task: image:push
